@@ -1098,6 +1098,38 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
     d2b_pk_all = pd.concat([f for f in [spd_pick,ltl_pick] if not f.empty],ignore_index=True) if any(not f.empty for f in [spd_pick,ltl_pick]) else pd.DataFrame()
     d2b_pa_all = pd.concat([f for f in [spd_pack,ltl_pack] if not f.empty],ignore_index=True) if any(not f.empty for f in [spd_pack,ltl_pack]) else pd.DataFrame()
 
+    # ── Open & Shortage compute (must be before overview f-string) ────────────
+    def _os_client_pivot(df, status_filter, label):
+        sub = df[df["orderstatus"] == status_filter].copy() if not df.empty else df
+        if sub.empty:
+            return f'<p class="pivot-title">{label}</p><p class="empty">No records.</p>'
+        grp = (sub.groupby("clientname", sort=False)
+                  .agg(OrderType=("ordertype", lambda x: ", ".join(sorted(x.unique()))),
+                       Total=("shipmentordercode", "nunique"),
+                       AvgAge=("AgeLabel", lambda x: x.mode()[0] if len(x) else ""))
+                  .sort_values("Total", ascending=False)
+                  .reset_index())
+        hdr = "<tr><th>Client</th><th>Order Type</th><th>Orders</th><th>Typical Age</th></tr>"
+        rows = "".join(
+            f"<tr><td>{esc(r.clientname)}</td><td>{esc(r.OrderType)}</td>"
+            f"<td><strong>{int(r.Total)}</strong></td><td>{esc(r.AvgAge)}</td></tr>"
+            for _, r in grp.iterrows()
+        )
+        return (f'<p class="pivot-title">{label}</p>'
+                f'<div class="tbl-wrap"><table class="qtable"><thead>{hdr}</thead>'
+                f'<tbody>{rows}</tbody></table></div>')
+
+    if not open_shortage_df.empty:
+        open_shortage_df = open_shortage_df.copy()
+        age_src = open_shortage_df["picktaskcreatedat"].where(
+            open_shortage_df["picktaskcreatedat"].notna(),
+            open_shortage_df["allocationdate"]
+        )
+        open_shortage_df["AgeLabel"] = age_src.apply(lambda t: _age_label(t, now))
+
+    n_open     = int((open_shortage_df["orderstatus"] == "Open").sum())     if not open_shortage_df.empty else 0
+    n_shortage = int((open_shortage_df["orderstatus"] == "Shortage").sum()) if not open_shortage_df.empty else 0
+
     # ── Tab content ───────────────────────────────────────────────────────────
     overview = f"""
 <div class="section-title">Live Queue Snapshot</div>
@@ -1119,6 +1151,15 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
 <div class="pivot-row">
   <div class="pivot-col">{client_pivot(d2c_pack,"D2C Packing")}</div>
   <div class="pivot-col">{client_pivot(d2b_pa_all,"D2B Packing (SPD + LTL)")}</div>
+</div>
+<div class="kpi-row" style="margin-top:1.5rem">
+  {kpi(n_open,"Open Orders","#0ea5e9")}
+  {kpi(n_shortage,"Shortage Orders","#dc2626")}
+</div>
+<div class="section-title" style="margin-top:1.5rem">Open &amp; Shortage \u2014 Client Distribution</div>
+<div class="pivot-row">
+  <div class="pivot-col">{_os_client_pivot(open_shortage_df,"Open","Open Orders by Client")}</div>
+  <div class="pivot-col">{_os_client_pivot(open_shortage_df,"Shortage","Shortage Orders by Client")}</div>
 </div>"""
 
     today_tab = f"""
@@ -1155,58 +1196,8 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
 <div class="section-title" style="margin-top:1.2rem">Detail</div>
 {tbl(_dedup_orders(ltl_nopack),NP)}"""
 
-    # ── Open & Shortage tab ───────────────────────────────────────────────────
-    def _os_client_pivot(df, status_filter, label):
-        """Client distribution for a specific status (Open or Shortage)."""
-        sub = df[df["orderstatus"] == status_filter].copy() if not df.empty else df
-        if sub.empty:
-            return f'<p class="pivot-title">{label}</p><p class="empty">No records.</p>'
-        grp = (sub.groupby("clientname", sort=False)
-                  .agg(OrderType=("ordertype", lambda x: ", ".join(sorted(x.unique()))),
-                       Total=("shipmentordercode", "nunique"),
-                       AvgAge=("AgeLabel", lambda x: x.mode()[0] if len(x) else ""))
-                  .sort_values("Total", ascending=False)
-                  .reset_index())
-        hdr = "<tr><th>Client</th><th>Order Type</th><th>Orders</th><th>Typical Age</th></tr>"
-        rows = "".join(
-            f"<tr><td>{esc(r.clientname)}</td><td>{esc(r.OrderType)}</td>"
-            f"<td><strong>{int(r.Total)}</strong></td><td>{esc(r.AvgAge)}</td></tr>"
-            for _, r in grp.iterrows()
-        )
-        return (f'<p class="pivot-title">{label}</p>'
-                f'<div class="tbl-wrap"><table class="qtable"><thead>{hdr}</thead>'
-                f'<tbody>{rows}</tbody></table></div>')
-
-    OS_COLS = ["shipmentordercode", "clientname", "ordertype", "orderstatus", "AgeLabel"]
-
-    if not open_shortage_df.empty:
-        # Compute age from picking task created date (fall back to allocation date)
-        open_shortage_df = open_shortage_df.copy()
-        age_src = open_shortage_df["picktaskcreatedat"].where(
-            open_shortage_df["picktaskcreatedat"].notna(),
-            open_shortage_df["allocationdate"]
-        )
-        open_shortage_df["AgeLabel"] = age_src.apply(lambda t: _age_label(t, now))
-
-    n_open     = int((open_shortage_df["orderstatus"] == "Open").sum())     if not open_shortage_df.empty else 0
-    n_shortage = int((open_shortage_df["orderstatus"] == "Shortage").sum()) if not open_shortage_df.empty else 0
-
-    os_tab = f"""
-<div class="kpi-row">
-  {kpi(n_open,     "Open Orders",     "#0ea5e9")}
-  {kpi(n_shortage, "Shortage Orders", "#dc2626")}
-  {kpi(n_open + n_shortage, "Total", "#8b5cf6")}
-</div>
-<div class="section-title" style="margin-top:1.5rem">Client Distribution \u2014 Open Orders</div>
-{_os_client_pivot(open_shortage_df, "Open", "Open Orders by Client")}
-<div class="section-title" style="margin-top:1.5rem">Client Distribution \u2014 Shortage Orders</div>
-{_os_client_pivot(open_shortage_df, "Shortage", "Shortage Orders by Client")}
-<div class="section-title" style="margin-top:1.5rem">Full List</div>
-{tbl(open_shortage_df, OS_COLS, urgency_col=None)}"""
-
     TABS = [
         ("ov",     "Overview",              overview,                                         None),
-        ("os",     "Open & Shortage",       os_tab,                                           n_open + n_shortage),
         ("d2cpk",  "D2C Picking",           d2c_pk_tab,                                       len(d2c_pick)),
         ("d2cpa",  "D2C Packing",           d2c_pa_tab,                                       len(d2c_pack)),
         ("spdpk",  "SPD Picking",           mk_pick(spd_pick,"SPD Picking",td_pk_spd,td_pa_spd), len(spd_pick)),
