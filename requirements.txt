@@ -1,0 +1,4 @@
+snowflake-connector-python
+pandas
+pytz
+requests
