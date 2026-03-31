@@ -357,6 +357,7 @@ INNER JOIN {DB}.CLIENT                      c   ON so.ClientId             = c.I
 INNER JOIN {DB}.SHIPMENTORDERSTATUS         sos ON so.ShipmentOrderStatusId = sos.Id
 LEFT  JOIN {DB}.WAREHOUSETASK               wt  ON so.Id = wt.ShipmentOrderId
                                                 AND wt.WarehouseTaskTypeId  = 1
+                                                AND wt.WarehouseId          = 26771
                                                 AND wt.Deleted              = 0
 
 WHERE so.WarehouseId                        = 26771
