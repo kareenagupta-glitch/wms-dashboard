@@ -1134,6 +1134,7 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
   {kpi(tot_pick,"Pending Pick (Orders)","#8b5cf6")}{kpi(tot_pack,"Pending Pack (Orders)","#0ea5e9")}
   {kpi(pp+ppa,"Past SLA (All)","#dc2626")}{kpi(bp+bpa,"Breaching SLA","#d97706")}
   {kpi(td_fp,"Fully Picked Today","#22c55e")}{kpi(td_fa,"Fully Packed Today","#3b82f6")}
+  {kpi(n_open,"Open Orders","#0ea5e9")}{kpi(n_shortage,"Shortage Orders","#dc2626")}
 </div>
 <div class="chart-row" style="margin-top:1.5rem">
   {urgency_chart(all_pick, all_pack)}
@@ -1148,10 +1149,6 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
 <div class="pivot-row">
   <div class="pivot-col">{client_pivot(d2c_pack,"D2C Packing")}</div>
   <div class="pivot-col">{client_pivot(d2b_pa_all,"D2B Packing (SPD + LTL)")}</div>
-</div>
-<div class="kpi-row" style="margin-top:1.5rem">
-  {kpi(n_open,"Open Orders","#0ea5e9")}
-  {kpi(n_shortage,"Shortage Orders","#dc2626")}
 </div>
 <div class="section-title" style="margin-top:1.5rem">Open &amp; Shortage \u2014 Client Distribution</div>
 <div class="pivot-row">
