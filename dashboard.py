@@ -334,6 +334,43 @@ GROUP BY
 """
 
 
+def _open_shortage_sql():
+    """
+    Open (StatusId=6) and Shortage (StatusId=2) orders for warehouse 26771.
+    Includes order type, client, allocation date and picking task creation date.
+    """
+    return f"""
+SELECT
+    so.Id                                   AS ShipmentOrderId,
+    so.Code                                 AS ShipmentOrderCode,
+    COALESCE(c.FullName, c.DisplayName)     AS ClientName,
+    c.DisplayName                           AS ClientDisplayName,
+    sot.Name                                AS OrderType,
+    sos.Name                                AS OrderStatus,
+    so.ShipmentOrderDate                    AS AllocationDate,
+    MIN(wt.CreatedDateTime)                 AS PickTaskCreatedAt,
+    so.WarehouseId
+
+FROM {DB}.SHIPMENTORDER                     so
+INNER JOIN {DB}.SHIPMENTORDERTYPE           sot ON so.ShipmentOrderTypeId  = sot.Id
+INNER JOIN {DB}.CLIENT                      c   ON so.ClientId             = c.Id   AND c.Deleted = 0
+INNER JOIN {DB}.SHIPMENTORDERSTATUS         sos ON so.ShipmentOrderStatusId = sos.Id
+LEFT  JOIN {DB}.WAREHOUSETASK               wt  ON so.Id = wt.ShipmentOrderId
+                                                AND wt.WarehouseTaskTypeId  = 1
+                                                AND wt.Deleted              = 0
+
+WHERE so.WarehouseId                        = 26771
+  AND so.ShipmentOrderStatusId              IN (2, 6)
+  AND so.Deleted                            = 0
+  AND COALESCE(c.FullName, c.DisplayName)   NOT ILIKE '%test%'
+
+GROUP BY
+    so.Id, so.Code,
+    COALESCE(c.FullName, c.DisplayName), c.DisplayName,
+    sot.Name, sos.Name, so.ShipmentOrderDate, so.WarehouseId
+"""
+
+
 def _today_progress_sql(today_str):
     """
     UNION approach — orders appear TWICE if both picking and packing happened today.
@@ -759,6 +796,10 @@ DISPLAY_COLUMNS = {
     "ltl_packed":         "LTL Packed",
     "TotalPicked":        "Total Picked",
     "TotalPacked":        "Total Packed",
+    "orderstatus":        "Status",
+    "ordertype":          "Order Type",
+    "allocationdate":     "Allocation Date",
+    "picktaskcreatedat":  "Pick Task Created",
 }
 
 
@@ -792,6 +833,7 @@ def build_queue(df, urgency_fn, priority_df, now, tz, is_monday=False, suppress_
 
 def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
                    ltl_pack, ltl_pick, ltl_nopack, today_df, hist_df,
+                   open_shortage_df,
                    now, filepath):
     """Generate a BI-style HTML dashboard: KPIs, pivot summaries, charts, detail tables."""
     import html as _html, json
@@ -1113,16 +1155,66 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
 <div class="section-title" style="margin-top:1.2rem">Detail</div>
 {tbl(_dedup_orders(ltl_nopack),NP)}"""
 
+    # ── Open & Shortage tab ───────────────────────────────────────────────────
+    def _os_client_pivot(df, status_filter, label):
+        """Client distribution for a specific status (Open or Shortage)."""
+        sub = df[df["orderstatus"] == status_filter].copy() if not df.empty else df
+        if sub.empty:
+            return f'<p class="pivot-title">{label}</p><p class="empty">No records.</p>'
+        grp = (sub.groupby("clientname", sort=False)
+                  .agg(OrderType=("ordertype", lambda x: ", ".join(sorted(x.unique()))),
+                       Total=("shipmentordercode", "nunique"),
+                       AvgAge=("AgeLabel", lambda x: x.mode()[0] if len(x) else ""))
+                  .sort_values("Total", ascending=False)
+                  .reset_index())
+        hdr = "<tr><th>Client</th><th>Order Type</th><th>Orders</th><th>Typical Age</th></tr>"
+        rows = "".join(
+            f"<tr><td>{esc(r.clientname)}</td><td>{esc(r.OrderType)}</td>"
+            f"<td><strong>{int(r.Total)}</strong></td><td>{esc(r.AvgAge)}</td></tr>"
+            for _, r in grp.iterrows()
+        )
+        return (f'<p class="pivot-title">{label}</p>'
+                f'<div class="tbl-wrap"><table class="qtable"><thead>{hdr}</thead>'
+                f'<tbody>{rows}</tbody></table></div>')
+
+    OS_COLS = ["shipmentordercode", "clientname", "ordertype", "orderstatus", "AgeLabel"]
+
+    if not open_shortage_df.empty:
+        # Compute age from picking task created date (fall back to allocation date)
+        open_shortage_df = open_shortage_df.copy()
+        age_src = open_shortage_df["picktaskcreatedat"].where(
+            open_shortage_df["picktaskcreatedat"].notna(),
+            open_shortage_df["allocationdate"]
+        )
+        open_shortage_df["AgeLabel"] = age_src.apply(lambda t: _age_label(t, now))
+
+    n_open     = int((open_shortage_df["orderstatus"] == "Open").sum())     if not open_shortage_df.empty else 0
+    n_shortage = int((open_shortage_df["orderstatus"] == "Shortage").sum()) if not open_shortage_df.empty else 0
+
+    os_tab = f"""
+<div class="kpi-row">
+  {kpi(n_open,     "Open Orders",     "#0ea5e9")}
+  {kpi(n_shortage, "Shortage Orders", "#dc2626")}
+  {kpi(n_open + n_shortage, "Total", "#8b5cf6")}
+</div>
+<div class="section-title" style="margin-top:1.5rem">Client Distribution \u2014 Open Orders</div>
+{_os_client_pivot(open_shortage_df, "Open", "Open Orders by Client")}
+<div class="section-title" style="margin-top:1.5rem">Client Distribution \u2014 Shortage Orders</div>
+{_os_client_pivot(open_shortage_df, "Shortage", "Shortage Orders by Client")}
+<div class="section-title" style="margin-top:1.5rem">Full List</div>
+{tbl(open_shortage_df, OS_COLS, urgency_col=None)}"""
+
     TABS = [
-        ("ov",     "Overview",       overview,                             None),
-        ("d2cpk",  "D2C Picking",    d2c_pk_tab,                           len(d2c_pick)),
-        ("d2cpa",  "D2C Packing",    d2c_pa_tab,                           len(d2c_pack)),
-        ("spdpk",  "SPD Picking",    mk_pick(spd_pick,"SPD Picking",td_pk_spd,td_pa_spd), len(spd_pick)),
-        ("spdpa",  "SPD Packing",    mk_pack(spd_pack,"SPD Packing",td_pk_spd,td_pa_spd), len(spd_pack)),
-        ("ltlpk",  "LTL Picking",    mk_pick(ltl_pick,"LTL Picking",td_pk_ltl,td_pa_ltl), len(ltl_pick)),
-        ("ltlpa",  "LTL Packing",    mk_pack(ltl_pack,"LTL Packing",td_pk_ltl,td_pa_ltl), len(ltl_pack)),
-        ("ltlnp",  "LTL No-Pack \u26a0",nopack_tab,                        len(ltl_nopack)),
-        ("tr",     "Daily Trend",    trend_chart(hist_df),                  None),
+        ("ov",     "Overview",              overview,                                         None),
+        ("os",     "Open & Shortage",       os_tab,                                           n_open + n_shortage),
+        ("d2cpk",  "D2C Picking",           d2c_pk_tab,                                       len(d2c_pick)),
+        ("d2cpa",  "D2C Packing",           d2c_pa_tab,                                       len(d2c_pack)),
+        ("spdpk",  "SPD Picking",           mk_pick(spd_pick,"SPD Picking",td_pk_spd,td_pa_spd), len(spd_pick)),
+        ("spdpa",  "SPD Packing",           mk_pack(spd_pack,"SPD Packing",td_pk_spd,td_pa_spd), len(spd_pack)),
+        ("ltlpk",  "LTL Picking",           mk_pick(ltl_pick,"LTL Picking",td_pk_ltl,td_pa_ltl), len(ltl_pick)),
+        ("ltlpa",  "LTL Packing",           mk_pack(ltl_pack,"LTL Packing",td_pk_ltl,td_pa_ltl), len(ltl_pack)),
+        ("ltlnp",  "LTL No-Pack \u26a0",    nopack_tab,                                       len(ltl_nopack)),
+        ("tr",     "Daily Trend",           trend_chart(hist_df),                              None),
     ]
 
     def _nav_item(i, t):
@@ -1587,6 +1679,10 @@ def main():
     final_hist = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+    # ── Open & Shortage Orders ────────────────────────────────────────────────
+    logger.info("Open & Shortage orders...")
+    open_shortage_df = query_snowflake(_open_shortage_sql())
+
     # ── HTML Dashboard ────────────────────────────────────────────────────────
     logger.info("Writing HTML dashboard...")
     html_path = r"C:\Users\user\Desktop\Claude\wms_dashboard\wms_dashboard.html"
@@ -1595,6 +1691,7 @@ def main():
         spd_pack, spd_pick,
         ltl_pack, ltl_pick,
         ltl_nopack, today_df, final_hist,
+        open_shortage_df,
         now, html_path
     )
     logger.info(f"  → HTML dashboard written → {html_path}")
