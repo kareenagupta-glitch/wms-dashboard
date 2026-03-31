@@ -647,25 +647,19 @@ def _d2b_urgency(row, now, tz, sla_hrs, is_picking=False):
     return score, level, status, f"{sla_hrs}hr SLA"
 
 
-def _age_label(hrs):
+def _age_label(allocation_dt, now):
     """
-    Convert working hours (float) into a human-readable string.
-    Uses working-day units (1 working day = 11 hrs, Mon-Fri 7am-6pm).
-    e.g. 5.0  → '5h'
-         13.5 → '1d 2.5h'
-         22.0 → '2d 0h'
+    Age as calendar days: today - allocation date of the order.
+    e.g. allocated today → '0d', allocated yesterday → '1d'
     """
     try:
-        hrs = float(hrs)
-    except (TypeError, ValueError):
+        if pd.isna(allocation_dt):
+            return ""
+        alloc_date = pd.Timestamp(allocation_dt).date()
+        days = (now.date() - alloc_date).days
+        return f"{max(days, 0)}d"
+    except Exception:
         return ""
-    if hrs < 0:
-        return ""
-    import math
-    hrs = math.ceil(hrs)          # round up to nearest whole hour
-    WORK_HRS_PER_DAY = 11
-    days = math.ceil(hrs / WORK_HRS_PER_DAY)
-    return f"{days}d" if hrs >= WORK_HRS_PER_DAY else f"{hrs}h"
 
 
 def apply_urgency(df, urgency_fn, now, tz):
@@ -695,7 +689,7 @@ def apply_urgency(df, urgency_fn, now, tz):
 
     if age_col:
         df["AgeLabel"] = df[age_col].apply(
-            lambda t: _age_label(_working_hours_elapsed(t, now, tz))
+            lambda t: _age_label(t, now)
         )
     return df
 
