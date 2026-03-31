@@ -1104,15 +1104,12 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
         if sub.empty:
             return f'<p class="pivot-title">{label}</p><p class="empty">No records.</p>'
         grp = (sub.groupby("clientname", sort=False)
-                  .agg(OrderType=("ordertype", lambda x: ", ".join(sorted(x.unique()))),
-                       Total=("shipmentordercode", "nunique"),
-                       AvgAge=("AgeLabel", lambda x: x.mode()[0] if len(x) else ""))
+                  .agg(Total=("shipmentordercode", "nunique"))
                   .sort_values("Total", ascending=False)
                   .reset_index())
-        hdr = "<tr><th>Client</th><th>Order Type</th><th>Orders</th><th>Typical Age</th></tr>"
+        hdr = "<tr><th>Client</th><th>Orders</th></tr>"
         rows = "".join(
-            f"<tr><td>{esc(r.clientname)}</td><td>{esc(r.OrderType)}</td>"
-            f"<td><strong>{int(r.Total)}</strong></td><td>{esc(r.AvgAge)}</td></tr>"
+            f"<tr><td>{esc(r.clientname)}</td><td><strong>{int(r.Total)}</strong></td></tr>"
             for _, r in grp.iterrows()
         )
         return (f'<p class="pivot-title">{label}</p>'
