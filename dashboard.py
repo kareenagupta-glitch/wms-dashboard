@@ -105,7 +105,7 @@ SELECT
     c.DisplayName                    AS ClientDisplayName,
     pack.WaveNo,
     pack.WarehouseId,
-    so.ShipmentOrderDate             AS AllocationDate,
+    MIN(pick.CreatedDateTime)        AS AllocationDate,
     MAX(pick.ActualFinishDateTime)   AS PickingCompletedAt,
     CASE pack.WarehouseTaskStatusId
         WHEN 1 THEN 'Pending'
@@ -137,7 +137,7 @@ WHERE pack.WarehouseTaskTypeId      = 6               -- Packing
 GROUP BY
     pack.Id, pack.ShipmentOrderId, so.Code,
     COALESCE(c.FullName, c.DisplayName), c.DisplayName, pack.WaveNo,
-    pack.WarehouseId, so.ShipmentOrderDate, pack.WarehouseTaskStatusId
+    pack.WarehouseId, pack.WarehouseTaskStatusId
 """
 
 
@@ -201,7 +201,7 @@ SELECT
     pick.WaveNo,
     so.WarehouseId,
     pick.PickingCompletedAt,
-    so.ShipmentOrderDate             AS AllocationDate,
+    pick.TaskCreatedAt               AS AllocationDate,
     CASE pack.PackingStatusId
         WHEN 1 THEN 'Pending'
         WHEN 2 THEN 'Started'
@@ -213,6 +213,7 @@ FROM (
         ShipmentOrderId,
         ClientId,
         WaveNo,
+        MIN(CreatedDateTime)         AS TaskCreatedAt,
         MAX(ActualFinishDateTime)    AS PickingCompletedAt
     FROM {DB}.WAREHOUSETASK
     WHERE WarehouseTaskTypeId  = 1
