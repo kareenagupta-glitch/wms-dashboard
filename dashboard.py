@@ -363,7 +363,6 @@ LEFT  JOIN {DB}.WAREHOUSETASK               wt  ON so.Id = wt.ShipmentOrderId
 WHERE so.WarehouseId                        = 26771
   AND so.ShipmentOrderStatusId              IN (2, 6)
   AND so.Deleted                            = 0
-  AND so.ShipmentOrderDate                  >= DATEADD(day, -90, CURRENT_DATE)
   AND COALESCE(c.FullName, c.DisplayName)   NOT ILIKE '%test%'
 
 GROUP BY
