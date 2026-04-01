@@ -1126,8 +1126,8 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
         )
         open_shortage_df["AgeLabel"] = age_src.apply(lambda t: _age_label(t, now))
 
-    n_open     = int((open_shortage_df["orderstatus"] == "Open").sum())     if not open_shortage_df.empty else 0
-    n_shortage = int((open_shortage_df["orderstatus"] == "Shortage").sum()) if not open_shortage_df.empty else 0
+    n_open     = int(open_shortage_df[open_shortage_df["orderstatus"] == "Open"]["shipmentorderid"].nunique())     if not open_shortage_df.empty else 0
+    n_shortage = int(open_shortage_df[open_shortage_df["orderstatus"] == "Shortage"]["shipmentorderid"].nunique()) if not open_shortage_df.empty else 0
 
     # ── Tab content ───────────────────────────────────────────────────────────
     overview = f"""
