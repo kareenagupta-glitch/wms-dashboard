@@ -372,6 +372,31 @@ GROUP BY
 """
 
 
+def _hourly_today_sql():
+    """Picks and packs by hour for today, per client — for the hourly breakdown chart."""
+    return f"""
+SELECT
+    HOUR(wt.ActualFinishDateTime)                           AS hour,
+    CASE wt.WarehouseTaskTypeId WHEN 1 THEN 'Picking' ELSE 'Packing' END AS activitytype,
+    COALESCE(c.FullName, c.DisplayName)                     AS clientname,
+    COUNT(DISTINCT wt.ShipmentOrderId)                      AS orders
+
+FROM {DB}.WAREHOUSETASK                                     wt
+INNER JOIN {DB}.SHIPMENTORDER                               so  ON wt.ShipmentOrderId = so.Id AND so.Deleted = 0
+INNER JOIN {DB}.CLIENT                                      c   ON so.ClientId        = c.Id AND c.Deleted  = 0
+
+WHERE wt.WarehouseTaskTypeId    IN (1, 6)
+  AND wt.WarehouseTaskStatusId  = 3
+  AND wt.WarehouseId            = 26771
+  AND DATE(wt.ActualFinishDateTime) = CURRENT_DATE
+  AND wt.Deleted                = 0
+  AND COALESCE(c.FullName, c.DisplayName) NOT ILIKE '%test%'
+
+GROUP BY 1, 2, 3
+ORDER BY 1, 2
+"""
+
+
 def _today_progress_sql(today_str):
     """
     UNION approach — orders appear TWICE if both picking and packing happened today.
@@ -834,7 +859,7 @@ def build_queue(df, urgency_fn, priority_df, now, tz, is_monday=False, suppress_
 
 def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
                    ltl_pack, ltl_pick, ltl_nopack, today_df, hist_df,
-                   open_shortage_df,
+                   open_shortage_df, hourly_df,
                    now, filepath):
     """Generate a BI-style HTML dashboard: KPIs, pivot summaries, charts, detail tables."""
     import html as _html, json
@@ -956,6 +981,81 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
         return (f'<div class="chart-box wide"><div class="chart-title">Urgency Breakdown</div>'
                 f'<canvas id="urgBar" height="110"></canvas></div>'
                 f'<script>{js}</script>')
+
+    def hourly_section(hdf):
+        """Client dropdown + hourly breakdown chart for today."""
+        if hdf.empty:
+            return '<p class="empty">No hourly data yet for today.</p>'
+        clients = sorted(hdf["clientname"].dropna().unique().tolist())
+        opts = '<option value="__all__">All Clients</option>' + "".join(
+            f'<option value="{esc(c)}">{esc(c)}</option>' for c in clients
+        )
+        # Serialize compact: list of [hour, activitytype, clientname, orders]
+        rows = hdf[["hour","activitytype","clientname","orders"]].copy()
+        rows["hour"] = pd.to_numeric(rows["hour"], errors="coerce").fillna(0).astype(int)
+        rows["orders"] = pd.to_numeric(rows["orders"], errors="coerce").fillna(0).astype(int)
+        raw = json.dumps(rows.rename(columns={"hour":"h","activitytype":"t","clientname":"c","orders":"n"}).to_dict("records"))
+        hour_labels = json.dumps([f"{h:02d}:00" for h in range(24)])
+        return f"""
+<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+  <div class="section-title" style="margin:0">Today \u2014 Hourly Breakdown</div>
+  <select id="clientSel" onchange="updateHourly(this.value)"
+    style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:.3rem .7rem;font-size:.82rem;cursor:pointer">
+    {opts}
+  </select>
+</div>
+<div class="chart-box wide" style="margin-bottom:1.5rem">
+  <canvas id="hourlyBar" height="160"></canvas>
+</div>
+<script>
+(function(){{
+  var RAW = {raw};
+  var HLBLS = {hour_labels};
+  var hourlyChart = null;
+
+  function agg(client) {{
+    var data = (client === '__all__') ? RAW : RAW.filter(function(d){{ return d.c === client; }});
+    var pk = new Array(24).fill(0);
+    var pa = new Array(24).fill(0);
+    data.forEach(function(d) {{
+      if (d.t === 'Picking') pk[d.h] += d.n;
+      else pa[d.h] += d.n;
+    }});
+    return {{pk: pk, pa: pa}};
+  }}
+
+  window.updateHourly = function(client) {{
+    var v = agg(client);
+    if (hourlyChart) {{
+      hourlyChart.data.datasets[0].data = v.pk;
+      hourlyChart.data.datasets[1].data = v.pa;
+      hourlyChart.update();
+    }}
+  }};
+
+  var v0 = agg('__all__');
+  var ctx = document.getElementById('hourlyBar').getContext('2d');
+  hourlyChart = new Chart(ctx, {{
+    type: 'bar',
+    data: {{
+      labels: HLBLS,
+      datasets: [
+        {{label:'Picked', data:v0.pk, backgroundColor:'rgba(34,197,94,0.75)', borderRadius:3}},
+        {{label:'Packed', data:v0.pa, backgroundColor:'rgba(59,130,246,0.75)', borderRadius:3}}
+      ]
+    }},
+    options: {{
+      responsive: true,
+      interaction: {{mode:'index', intersect:false}},
+      plugins: {{legend: {{labels: {{color:'#94a3b8'}}}}}},
+      scales: {{
+        x: {{ticks:{{color:'#64748b',font:{{size:10}}}}, grid:{{color:'rgba(255,255,255,0.04)'}}}},
+        y: {{ticks:{{color:'#64748b'}}, grid:{{color:'rgba(255,255,255,0.04)'}}, beginAtZero:true}}
+      }}
+    }}
+  }});
+}})();
+</script>"""
 
     def trend_chart(df):
         if df.empty: return '<p class="empty">No history data.</p>'
@@ -1200,7 +1300,7 @@ def _generate_html(d2c_pack, d2c_pick, spd_pack, spd_pick,
         ("ltlpk",  "LTL Picking",           mk_pick(ltl_pick,"LTL Picking",td_pk_ltl,td_pa_ltl), len(ltl_pick)),
         ("ltlpa",  "LTL Packing",           mk_pack(ltl_pack,"LTL Packing",td_pk_ltl,td_pa_ltl), len(ltl_pack)),
         ("ltlnp",  "LTL No-Pack \u26a0",    nopack_tab,                                       len(ltl_nopack)),
-        ("tr",     "Daily Trend",           trend_chart(hist_df),                              None),
+        ("tr",     "Daily Trend",           hourly_section(hourly_df) + trend_chart(hist_df),  None),
     ]
 
     def _nav_item(i, t):
@@ -1669,6 +1769,10 @@ def main():
     logger.info("Open & Shortage orders...")
     open_shortage_df = query_snowflake(_open_shortage_sql())
 
+    # ── Hourly breakdown for today ────────────────────────────────────────────
+    logger.info("Hourly breakdown today...")
+    hourly_df = query_snowflake(_hourly_today_sql())
+
     # ── HTML Dashboard ────────────────────────────────────────────────────────
     logger.info("Writing HTML dashboard...")
     html_path = r"C:\Users\user\Desktop\Claude\wms_dashboard\wms_dashboard.html"
@@ -1677,7 +1781,7 @@ def main():
         spd_pack, spd_pick,
         ltl_pack, ltl_pick,
         ltl_nopack, today_df, final_hist,
-        open_shortage_df,
+        open_shortage_df, hourly_df,
         now, html_path
     )
     logger.info(f"  → HTML dashboard written → {html_path}")
